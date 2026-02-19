@@ -1,0 +1,12 @@
+FROM golang:1.23-alpine
+
+WORKDIR /site
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY cmd/ cmd/
+
+RUN go build -o /usr/local/bin/generate ./cmd/generate
+
+ENTRYPOINT ["generate"]

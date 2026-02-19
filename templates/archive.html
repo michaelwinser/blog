@@ -1,0 +1,17 @@
+{{define "title"}}Archive — Michael's Blog{{end}}
+{{define "content"}}
+<h1>Archive</h1>
+{{range .Years}}
+<section class="archive-year">
+    <h2>{{.Year}}</h2>
+    <ul>
+        {{range .Posts}}
+        <li>
+            <time datetime="{{.Date.Format "2006-01-02"}}">{{formatDateShort .Date}}</time>
+            <a href="{{.URL}}">{{.Title}}</a>
+        </li>
+        {{end}}
+    </ul>
+</section>
+{{end}}
+{{end}}

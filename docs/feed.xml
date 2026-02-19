@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Michael&#39;s Blog</title>
+    <link>https://michaelw.github.io/blog</link>
+    <description>Thoughts on software, technology, and more</description>
+    <lastBuildDate>Thu, 19 Feb 2026 00:00:00 +0000</lastBuildDate>
+    <item>
+      <title>Hello World</title>
+      <link>https://michaelw.github.io/blog/posts/hello-world/</link>
+      <description>My first post on this blog</description>
+      <pubDate>Thu, 19 Feb 2026 00:00:00 +0000</pubDate>
+      <guid>https://michaelw.github.io/blog/posts/hello-world/</guid>
+    </item>
+  </channel>
+</rss>

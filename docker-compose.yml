@@ -1,0 +1,8 @@
+services:
+  generate:
+    build: .
+    volumes:
+      - ./content:/site/content:ro
+      - ./templates:/site/templates:ro
+      - ./static:/site/static:ro
+      - ./docs:/site/docs
