@@ -1,8 +1,11 @@
 services:
-  generate:
+  blog:
     build: .
     volumes:
-      - ./content:/site/content:ro
+      - ./content:/site/content
       - ./templates:/site/templates:ro
       - ./static:/site/static:ro
+      - ./site.yml:/site/site.yml:ro
       - ./docs:/site/docs
+    ports:
+      - "${PORT:-9876}:8080"

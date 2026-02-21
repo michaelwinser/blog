@@ -3,12 +3,16 @@ package main
 import (
 	"bytes"
 	"encoding/xml"
+	"flag"
 	"fmt"
 	"html/template"
 	"io"
 	"io/fs"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -16,19 +20,23 @@ import (
 	"github.com/yuin/goldmark"
 	meta "github.com/yuin/goldmark-meta"
 	"github.com/yuin/goldmark/parser"
+	"gopkg.in/yaml.v2"
 )
 
 const (
-	contentDir  = "content/posts"
-	templateDir = "templates"
-	staticDir   = "static"
-	outputDir   = "docs"
-	siteURL     = "https://michaelw.github.io/blog"
-	siteTitle   = "Michael's Blog"
-	siteDesc    = "Thoughts on software, technology, and more"
+	contentDir   = "content/posts"
+	templateDir  = "templates"
+	staticDir    = "static"
+	outputDir    = "docs"
 	postsPerPage = 5
 	postsInFeed  = 20
 )
+
+type SiteConfig struct {
+	Title       string `yaml:"title"`
+	URL         string `yaml:"url"`
+	Description string `yaml:"description"`
+}
 
 type Post struct {
 	Title       string
@@ -40,14 +48,17 @@ type Post struct {
 }
 
 type HomePage struct {
+	Site  SiteConfig
 	Posts []*Post
 }
 
 type PostPage struct {
+	Site SiteConfig
 	Post *Post
 }
 
 type ArchivePage struct {
+	Site  SiteConfig
 	Years []YearGroup
 }
 
@@ -79,66 +90,249 @@ type RSSItem struct {
 }
 
 func main() {
-	if err := run(); err != nil {
+	cmd := "generate"
+	if len(os.Args) > 1 {
+		cmd = os.Args[1]
+	}
+
+	var err error
+	switch cmd {
+	case "generate":
+		err = runGenerate()
+	case "serve":
+		err = runServe()
+	case "clean":
+		err = runClean()
+	case "new":
+		err = runNew(os.Args[2:])
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)
+		fmt.Fprintf(os.Stderr, "Usage: blog {generate|serve|clean|new}\n")
+		os.Exit(1)
+	}
+
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
-	// Step 1: Clean output directory contents (not the dir itself, it may be a mount)
+func runServe() error {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	fmt.Printf("Serving %s on http://0.0.0.0:%s\n", outputDir, port)
+	return http.ListenAndServe(":"+port, http.FileServer(http.Dir(outputDir)))
+}
+
+func runClean() error {
+	if err := cleanDir(outputDir); err != nil {
+		return fmt.Errorf("cleaning output dir: %w", err)
+	}
+	fmt.Println("Cleaned output directory")
+	return nil
+}
+
+func runNew(args []string) error {
+	fs := flag.NewFlagSet("new", flag.ExitOnError)
+	title := fs.String("title", "", "Post title (required)")
+	date := fs.String("date", time.Now().Format("2006-01-02"), "Post date (YYYY-MM-DD)")
+	description := fs.String("description", "", "Post description")
+	url := fs.String("url", "", "Fetch URL and convert HTML via pandoc")
+	stdin := fs.Bool("stdin", false, "Read HTML from stdin and convert via pandoc")
+	fs.Parse(args)
+
+	if *title == "" {
+		return fmt.Errorf("--title is required")
+	}
+
+	slug := slugify(*title)
+	filename := fmt.Sprintf("%s-%s.md", *date, slug)
+	filepath := filepath.Join(contentDir, filename)
+
+	var body string
+	var err error
+
+	if *url != "" {
+		body, err = convertURL(*url)
+		if err != nil {
+			return fmt.Errorf("converting URL: %w", err)
+		}
+	} else if *stdin {
+		body, err = convertStdin()
+		if err != nil {
+			return fmt.Errorf("converting stdin: %w", err)
+		}
+	}
+
+	var buf bytes.Buffer
+	buf.WriteString("---\n")
+	fmt.Fprintf(&buf, "title: \"%s\"\n", *title)
+	fmt.Fprintf(&buf, "date: %s\n", *date)
+	if *description != "" {
+		fmt.Fprintf(&buf, "description: \"%s\"\n", *description)
+	}
+	buf.WriteString("---\n")
+	if body != "" {
+		buf.WriteString("\n")
+		buf.WriteString(body)
+		buf.WriteString("\n")
+	}
+
+	if err := os.MkdirAll(contentDir, 0o755); err != nil {
+		return fmt.Errorf("creating content dir: %w", err)
+	}
+
+	if err := os.WriteFile(filepath, buf.Bytes(), 0o644); err != nil {
+		return fmt.Errorf("writing post: %w", err)
+	}
+
+	fmt.Println(filepath)
+	return nil
+}
+
+func slugify(s string) string {
+	s = strings.ToLower(s)
+	re := regexp.MustCompile(`[^a-z0-9]+`)
+	s = re.ReplaceAllString(s, "-")
+	s = strings.Trim(s, "-")
+	return s
+}
+
+func convertURL(url string) (string, error) {
+	curl := exec.Command("curl", "-sL", url)
+	pandoc := exec.Command("pandoc", "-f", "html", "-t", "markdown-fenced_divs-bracketed_spans-header_attributes-link_attributes", "--wrap=none")
+
+	pipe, err := curl.StdoutPipe()
+	if err != nil {
+		return "", err
+	}
+	pandoc.Stdin = pipe
+
+	var out bytes.Buffer
+	pandoc.Stdout = &out
+	pandoc.Stderr = os.Stderr
+
+	if err := curl.Start(); err != nil {
+		return "", fmt.Errorf("starting curl: %w", err)
+	}
+	if err := pandoc.Start(); err != nil {
+		return "", fmt.Errorf("starting pandoc: %w", err)
+	}
+
+	if err := curl.Wait(); err != nil {
+		return "", fmt.Errorf("curl failed: %w", err)
+	}
+	if err := pandoc.Wait(); err != nil {
+		return "", fmt.Errorf("pandoc failed: %w", err)
+	}
+
+	return out.String(), nil
+}
+
+func convertStdin() (string, error) {
+	cmd := exec.Command("pandoc", "-f", "html", "-t", "markdown-fenced_divs-bracketed_spans-header_attributes-link_attributes", "--wrap=none")
+	cmd.Stdin = os.Stdin
+	cmd.Stderr = os.Stderr
+
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("pandoc failed: %w", err)
+	}
+	return string(out), nil
+}
+
+func loadConfig() (SiteConfig, error) {
+	data, err := os.ReadFile("site.yml")
+	if err != nil {
+		return SiteConfig{}, fmt.Errorf("reading site.yml: %w", err)
+	}
+
+	var cfg SiteConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return SiteConfig{}, fmt.Errorf("parsing site.yml: %w", err)
+	}
+
+	if cfg.Title == "" {
+		cfg.Title = "My Blog"
+	}
+	if cfg.URL == "" {
+		cfg.URL = "https://example.com"
+	}
+
+	return cfg, nil
+}
+
+func runGenerate() error {
+	site, err := loadConfig()
+	if err != nil {
+		return err
+	}
+
 	if err := cleanDir(outputDir); err != nil {
 		return fmt.Errorf("cleaning output dir: %w", err)
 	}
 
-	// Step 2: Parse templates
 	tmpl, err := parseTemplates()
 	if err != nil {
 		return fmt.Errorf("parsing templates: %w", err)
 	}
 
-	// Step 3: Parse markdown posts
 	posts, err := parsePosts()
 	if err != nil {
 		return fmt.Errorf("parsing posts: %w", err)
 	}
 
-	// Step 4: Sort posts by date descending
 	sort.Slice(posts, func(i, j int) bool {
 		return posts[i].Date.After(posts[j].Date)
 	})
 
 	fmt.Printf("Found %d posts\n", len(posts))
 
-	// Step 5: Generate pages
-	if err := generatePostPages(tmpl, posts); err != nil {
+	if err := generatePostPages(tmpl, site, posts); err != nil {
 		return fmt.Errorf("generating post pages: %w", err)
 	}
 
-	if err := generateHomePage(tmpl, posts); err != nil {
+	if err := generateHomePage(tmpl, site, posts); err != nil {
 		return fmt.Errorf("generating home page: %w", err)
 	}
 
-	if err := generateArchivePage(tmpl, posts); err != nil {
+	if err := generateArchivePage(tmpl, site, posts); err != nil {
 		return fmt.Errorf("generating archive page: %w", err)
 	}
 
-	if err := generateRSSFeed(posts); err != nil {
+	if err := generateRSSFeed(site, posts); err != nil {
 		return fmt.Errorf("generating RSS feed: %w", err)
 	}
 
-	// Step 6: Copy static files
 	if err := copyStaticFiles(); err != nil {
 		return fmt.Errorf("copying static files: %w", err)
 	}
 
-	// Step 7: Write .nojekyll
 	if err := os.WriteFile(filepath.Join(outputDir, ".nojekyll"), []byte{}, 0o644); err != nil {
 		return fmt.Errorf("writing .nojekyll: %w", err)
 	}
 
 	fmt.Println("Site generated successfully!")
 	return nil
+}
+
+// resolveFile checks for a file in the local directory first, then falls back
+// to the defaults directory (set via BLOG_DEFAULTS_DIR env var).
+func resolveFile(path string) string {
+	if _, err := os.Stat(path); err == nil {
+		return path
+	}
+	defaultsDir := os.Getenv("BLOG_DEFAULTS_DIR")
+	if defaultsDir != "" {
+		candidate := filepath.Join(defaultsDir, path)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	return path
 }
 
 func parseTemplates() (map[string]*template.Template, error) {
@@ -154,10 +348,10 @@ func parseTemplates() (map[string]*template.Template, error) {
 	pages := []string{"home.html", "post.html", "archive.html"}
 	templates := make(map[string]*template.Template, len(pages))
 
-	baseFile := filepath.Join(templateDir, "base.html")
+	baseFile := resolveFile(filepath.Join(templateDir, "base.html"))
 
 	for _, page := range pages {
-		pageFile := filepath.Join(templateDir, page)
+		pageFile := resolveFile(filepath.Join(templateDir, page))
 		t, err := template.New("base.html").Funcs(funcMap).ParseFiles(baseFile, pageFile)
 		if err != nil {
 			return nil, fmt.Errorf("parsing %s: %w", page, err)
@@ -213,7 +407,6 @@ func parsePost(md goldmark.Markdown, filename string) (*Post, error) {
 
 	metaData := meta.Get(ctx)
 
-	// Check draft status
 	if draft, ok := metaData["draft"]; ok {
 		if d, ok := draft.(bool); ok && d {
 			fmt.Printf("Skipping draft: %s\n", filename)
@@ -221,16 +414,13 @@ func parsePost(md goldmark.Markdown, filename string) (*Post, error) {
 		}
 	}
 
-	// Extract title
 	title, _ := metaData["title"].(string)
 	if title == "" {
 		title = "Untitled"
 	}
 
-	// Extract description
 	description, _ := metaData["description"].(string)
 
-	// Extract date
 	var date time.Time
 	if d, ok := metaData["date"].(string); ok {
 		date, err = time.Parse("2006-01-02", d)
@@ -241,7 +431,6 @@ func parsePost(md goldmark.Markdown, filename string) (*Post, error) {
 		date = d
 	}
 
-	// Derive slug from filename: 2026-02-19-hello-world.md → hello-world
 	slug := deriveSlug(filename)
 
 	return &Post{
@@ -256,14 +445,13 @@ func parsePost(md goldmark.Markdown, filename string) (*Post, error) {
 
 func deriveSlug(filename string) string {
 	name := strings.TrimSuffix(filename, ".md")
-	// Remove date prefix (YYYY-MM-DD-)
 	if len(name) > 11 && name[4] == '-' && name[7] == '-' && name[10] == '-' {
 		name = name[11:]
 	}
 	return name
 }
 
-func generatePostPages(templates map[string]*template.Template, posts []*Post) error {
+func generatePostPages(templates map[string]*template.Template, site SiteConfig, posts []*Post) error {
 	for _, post := range posts {
 		dir := filepath.Join(outputDir, "posts", post.Slug)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -275,7 +463,7 @@ func generatePostPages(templates map[string]*template.Template, posts []*Post) e
 			return err
 		}
 
-		err = templates["post.html"].Execute(f, PostPage{Post: post})
+		err = templates["post.html"].Execute(f, PostPage{Site: site, Post: post})
 		f.Close()
 		if err != nil {
 			return fmt.Errorf("executing post template for %s: %w", post.Slug, err)
@@ -286,7 +474,7 @@ func generatePostPages(templates map[string]*template.Template, posts []*Post) e
 	return nil
 }
 
-func generateHomePage(templates map[string]*template.Template, posts []*Post) error {
+func generateHomePage(templates map[string]*template.Template, site SiteConfig, posts []*Post) error {
 	recent := posts
 	if len(recent) > postsPerPage {
 		recent = recent[:postsPerPage]
@@ -298,7 +486,7 @@ func generateHomePage(templates map[string]*template.Template, posts []*Post) er
 	}
 	defer f.Close()
 
-	if err := templates["home.html"].Execute(f, HomePage{Posts: recent}); err != nil {
+	if err := templates["home.html"].Execute(f, HomePage{Site: site, Posts: recent}); err != nil {
 		return fmt.Errorf("executing home template: %w", err)
 	}
 
@@ -306,15 +494,13 @@ func generateHomePage(templates map[string]*template.Template, posts []*Post) er
 	return nil
 }
 
-func generateArchivePage(templates map[string]*template.Template, posts []*Post) error {
-	// Group posts by year
+func generateArchivePage(templates map[string]*template.Template, site SiteConfig, posts []*Post) error {
 	yearMap := make(map[int][]*Post)
 	for _, post := range posts {
 		year := post.Date.Year()
 		yearMap[year] = append(yearMap[year], post)
 	}
 
-	// Sort years descending
 	var years []YearGroup
 	for year, yearPosts := range yearMap {
 		years = append(years, YearGroup{Year: year, Posts: yearPosts})
@@ -334,7 +520,7 @@ func generateArchivePage(templates map[string]*template.Template, posts []*Post)
 	}
 	defer f.Close()
 
-	if err := templates["archive.html"].Execute(f, ArchivePage{Years: years}); err != nil {
+	if err := templates["archive.html"].Execute(f, ArchivePage{Site: site, Years: years}); err != nil {
 		return fmt.Errorf("executing archive template: %w", err)
 	}
 
@@ -342,7 +528,7 @@ func generateArchivePage(templates map[string]*template.Template, posts []*Post)
 	return nil
 }
 
-func generateRSSFeed(posts []*Post) error {
+func generateRSSFeed(site SiteConfig, posts []*Post) error {
 	feedPosts := posts
 	if len(feedPosts) > postsInFeed {
 		feedPosts = feedPosts[:postsInFeed]
@@ -352,10 +538,10 @@ func generateRSSFeed(posts []*Post) error {
 	for _, post := range feedPosts {
 		items = append(items, RSSItem{
 			Title:       post.Title,
-			Link:        siteURL + post.URL,
+			Link:        site.URL + post.URL,
 			Description: post.Description,
 			PubDate:     post.Date.Format(time.RFC1123Z),
-			GUID:        siteURL + post.URL,
+			GUID:        site.URL + post.URL,
 		})
 	}
 
@@ -367,9 +553,9 @@ func generateRSSFeed(posts []*Post) error {
 	feed := RSSFeed{
 		Version: "2.0",
 		Channel: RSSChannel{
-			Title:       siteTitle,
-			Link:        siteURL,
-			Description: siteDesc,
+			Title:       site.Title,
+			Link:        site.URL,
+			Description: site.Description,
 			LastBuild:   lastBuild,
 			Items:       items,
 		},
@@ -396,17 +582,38 @@ func generateRSSFeed(posts []*Post) error {
 }
 
 func copyStaticFiles() error {
-	return filepath.WalkDir(staticDir, func(path string, d fs.DirEntry, err error) error {
+	defaultsDir := os.Getenv("BLOG_DEFAULTS_DIR")
+
+	if defaultsDir != "" {
+		defaultStatic := filepath.Join(defaultsDir, staticDir)
+		if _, err := os.Stat(defaultStatic); err == nil {
+			if err := copyDir(defaultStatic, outputDir); err != nil {
+				return fmt.Errorf("copying default static files: %w", err)
+			}
+		}
+	}
+
+	if _, err := os.Stat(staticDir); err == nil {
+		if err := copyDir(staticDir, outputDir); err != nil {
+			return fmt.Errorf("copying local static files: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func copyDir(srcDir, destBase string) error {
+	return filepath.WalkDir(srcDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 
-		relPath, err := filepath.Rel(staticDir, path)
+		relPath, err := filepath.Rel(srcDir, path)
 		if err != nil {
 			return err
 		}
 
-		destPath := filepath.Join(outputDir, relPath)
+		destPath := filepath.Join(destBase, relPath)
 
 		if d.IsDir() {
 			return os.MkdirAll(destPath, 0o755)
