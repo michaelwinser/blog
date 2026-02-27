@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	contentDir   = "content/posts"
+	contentDir   = "posts"
 	templateDir  = "templates"
 	staticDir    = "static"
 	outputDir    = "docs"
@@ -196,18 +196,31 @@ func runNew(args []string) error {
 }
 
 func runInit(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: blog init <path>")
+	target := "."
+	if len(args) > 0 {
+		target = args[0]
 	}
-	target := args[0]
 
-	if _, err := os.Stat(target); err == nil {
-		return fmt.Errorf("%s already exists", target)
+	if info, err := os.Stat(target); err == nil {
+		if !info.IsDir() {
+			return fmt.Errorf("%s exists and is not a directory", target)
+		}
+		entries, err := os.ReadDir(target)
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", target, err)
+		}
+		for _, e := range entries {
+			name := e.Name()
+			if name == ".git" || name == ".DS_Store" {
+				continue
+			}
+			return fmt.Errorf("%s is not empty", target)
+		}
 	}
 
 	// Create directory structure
 	dirs := []string{
-		filepath.Join(target, "content", "posts"),
+		filepath.Join(target, "posts"),
 		filepath.Join(target, "docs"),
 		filepath.Join(target, "templates"),
 		filepath.Join(target, "static", "css"),
@@ -229,7 +242,7 @@ description: "A blog about things"
 
 	// .gitkeep files
 	for _, path := range []string{
-		filepath.Join(target, "content", "posts", ".gitkeep"),
+		filepath.Join(target, "posts", ".gitkeep"),
 		filepath.Join(target, "docs", ".gitkeep"),
 	} {
 		if err := os.WriteFile(path, []byte{}, 0o644); err != nil {
@@ -453,7 +466,9 @@ footer {
 	fmt.Printf("Created blog at %s\n", target)
 	fmt.Println()
 	fmt.Println("Next steps:")
-	fmt.Printf("  cd %s\n", target)
+	if target != "." {
+		fmt.Printf("  cd %s\n", target)
+	}
 	fmt.Println("  Edit site.yml with your blog details")
 	fmt.Println("  blog new --title \"My First Post\"")
 	fmt.Println("  blog generate")

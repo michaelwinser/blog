@@ -45,7 +45,7 @@ blog new --title "Imported Post" --url https://example.com/article
 pbpaste | blog new --stdin --title "Pasted Post"
 ```
 
-Posts are Markdown files with YAML frontmatter stored in `content/posts/`:
+Posts are Markdown files with YAML frontmatter stored in `posts/`:
 
 ```markdown
 ---
@@ -65,7 +65,7 @@ Set `draft: true` to exclude a post from generation.
 ```
 my-blog/
 ├── site.yml                # Site configuration
-├── content/posts/          # Markdown source files
+├── posts/          # Markdown source files
 ├── templates/              # Go HTML templates
 ├── static/css/             # Stylesheet
 └── docs/                   # Generated output
