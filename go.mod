@@ -1,4 +1,4 @@
-module github.com/michaelw/blog
+module github.com/michaelwinser/blog
 
 go 1.23
 

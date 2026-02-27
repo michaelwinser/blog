@@ -105,9 +105,11 @@ func main() {
 		err = runClean()
 	case "new":
 		err = runNew(os.Args[2:])
+	case "init":
+		err = runInit(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)
-		fmt.Fprintf(os.Stderr, "Usage: blog {generate|serve|clean|new}\n")
+		fmt.Fprintf(os.Stderr, "Usage: blog {generate|serve|clean|new|init}\n")
 		os.Exit(1)
 	}
 
@@ -190,6 +192,273 @@ func runNew(args []string) error {
 	}
 
 	fmt.Println(filepath)
+	return nil
+}
+
+func runInit(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: blog init <path>")
+	}
+	target := args[0]
+
+	if _, err := os.Stat(target); err == nil {
+		return fmt.Errorf("%s already exists", target)
+	}
+
+	// Create directory structure
+	dirs := []string{
+		filepath.Join(target, "content", "posts"),
+		filepath.Join(target, "docs"),
+		filepath.Join(target, "templates"),
+		filepath.Join(target, "static", "css"),
+	}
+	for _, dir := range dirs {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("creating %s: %w", dir, err)
+		}
+	}
+
+	// site.yml
+	siteYml := `title: "My Blog"
+url: "https://example.com"
+description: "A blog about things"
+`
+	if err := os.WriteFile(filepath.Join(target, "site.yml"), []byte(siteYml), 0o644); err != nil {
+		return err
+	}
+
+	// .gitkeep files
+	for _, path := range []string{
+		filepath.Join(target, "content", "posts", ".gitkeep"),
+		filepath.Join(target, "docs", ".gitkeep"),
+	} {
+		if err := os.WriteFile(path, []byte{}, 0o644); err != nil {
+			return err
+		}
+	}
+
+	// .gitignore
+	gitignore := `.env
+.DS_Store
+`
+	if err := os.WriteFile(filepath.Join(target, ".gitignore"), []byte(gitignore), 0o644); err != nil {
+		return err
+	}
+
+	// templates/base.html
+	baseHTML := `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{block "title" .}}{{.Site.Title}}{{end}}</title>
+    <link rel="stylesheet" href="/css/style.css">
+    <link rel="alternate" type="application/rss+xml" title="RSS Feed" href="/feed.xml">
+</head>
+<body>
+    <header>
+        <nav>
+            <a href="/" class="site-title">{{.Site.Title}}</a>
+            <div class="nav-links">
+                <a href="/">Home</a>
+                <a href="/archive/">Archive</a>
+                <a href="/feed.xml">RSS</a>
+            </div>
+        </nav>
+    </header>
+    <main>
+        {{block "content" .}}{{end}}
+    </main>
+    <footer>
+        <p>&copy; {{.Site.Title}}</p>
+    </footer>
+</body>
+</html>
+`
+	if err := os.WriteFile(filepath.Join(target, "templates", "base.html"), []byte(baseHTML), 0o644); err != nil {
+		return err
+	}
+
+	// templates/home.html
+	homeHTML := `{{define "title"}}{{.Site.Title}}{{end}}
+{{define "content"}}
+<h1>Recent Posts</h1>
+{{range .Posts}}
+<article class="post-summary">
+    <h2><a href="{{.URL}}">{{.Title}}</a></h2>
+    <time datetime="{{.Date.Format "2006-01-02"}}">{{formatDate .Date}}</time>
+    {{if .Description}}<p>{{.Description}}</p>{{end}}
+</article>
+{{else}}
+<p>No posts yet.</p>
+{{end}}
+{{end}}
+`
+	if err := os.WriteFile(filepath.Join(target, "templates", "home.html"), []byte(homeHTML), 0o644); err != nil {
+		return err
+	}
+
+	// templates/post.html
+	postHTML := `{{define "title"}}{{.Post.Title}} — {{.Site.Title}}{{end}}
+{{define "content"}}
+<article class="post">
+    <header class="post-header">
+        <h1>{{.Post.Title}}</h1>
+        <time datetime="{{.Post.Date.Format "2006-01-02"}}">{{formatDate .Post.Date}}</time>
+    </header>
+    <div class="post-content">
+        {{.Post.Content}}
+    </div>
+</article>
+{{end}}
+`
+	if err := os.WriteFile(filepath.Join(target, "templates", "post.html"), []byte(postHTML), 0o644); err != nil {
+		return err
+	}
+
+	// templates/archive.html
+	archiveHTML := `{{define "title"}}Archive — {{.Site.Title}}{{end}}
+{{define "content"}}
+<h1>Archive</h1>
+{{range .Years}}
+<section class="archive-year">
+    <h2>{{.Year}}</h2>
+    <ul>
+        {{range .Posts}}
+        <li>
+            <time datetime="{{.Date.Format "2006-01-02"}}">{{formatDateShort .Date}}</time>
+            <a href="{{.URL}}">{{.Title}}</a>
+        </li>
+        {{end}}
+    </ul>
+</section>
+{{end}}
+{{end}}
+`
+	if err := os.WriteFile(filepath.Join(target, "templates", "archive.html"), []byte(archiveHTML), 0o644); err != nil {
+		return err
+	}
+
+	// static/css/style.css
+	styleCSS := `*,
+*::before,
+*::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, sans-serif;
+    line-height: 1.6;
+    color: #333;
+    max-width: 42rem;
+    margin: 0 auto;
+    padding: 2rem 1rem;
+}
+
+header nav {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 3rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid #eee;
+}
+
+.site-title {
+    font-weight: 700;
+    font-size: 1.2rem;
+    text-decoration: none;
+    color: #111;
+}
+
+.nav-links a {
+    margin-left: 1.5rem;
+    text-decoration: none;
+    color: #555;
+}
+
+.nav-links a:hover {
+    color: #111;
+}
+
+h1 { font-size: 1.8rem; margin-bottom: 1rem; }
+h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+
+a { color: #0066cc; }
+a:hover { color: #004499; }
+
+.post-summary {
+    margin-bottom: 2rem;
+}
+
+.post-summary h2 { margin-bottom: 0.25rem; }
+.post-summary time { color: #888; font-size: 0.9rem; }
+.post-summary p { margin-top: 0.5rem; color: #555; }
+
+.post-header { margin-bottom: 2rem; }
+.post-header time { color: #888; font-size: 0.9rem; }
+
+.post-content h2 { margin-top: 2rem; }
+.post-content h3 { margin-top: 1.5rem; font-size: 1.2rem; }
+.post-content p { margin-top: 1rem; }
+.post-content ul,
+.post-content ol { margin-top: 1rem; padding-left: 1.5rem; }
+.post-content li { margin-top: 0.25rem; }
+
+.post-content pre {
+    margin-top: 1rem;
+    padding: 1rem;
+    background: #f5f5f5;
+    border-radius: 4px;
+    overflow-x: auto;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+.post-content code {
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 0.9em;
+}
+
+.post-content :not(pre) > code {
+    background: #f5f5f5;
+    padding: 0.15em 0.3em;
+    border-radius: 3px;
+}
+
+.archive-year { margin-bottom: 2rem; }
+.archive-year ul { list-style: none; padding: 0; }
+.archive-year li { margin-top: 0.5rem; }
+.archive-year time {
+    display: inline-block;
+    width: 4rem;
+    color: #888;
+    font-size: 0.9rem;
+}
+
+footer {
+    margin-top: 4rem;
+    padding-top: 1rem;
+    border-top: 1px solid #eee;
+    color: #888;
+    font-size: 0.85rem;
+}
+`
+	if err := os.WriteFile(filepath.Join(target, "static", "css", "style.css"), []byte(styleCSS), 0o644); err != nil {
+		return err
+	}
+
+	fmt.Printf("Created blog at %s\n", target)
+	fmt.Println()
+	fmt.Println("Next steps:")
+	fmt.Printf("  cd %s\n", target)
+	fmt.Println("  Edit site.yml with your blog details")
+	fmt.Println("  blog new --title \"My First Post\"")
+	fmt.Println("  blog generate")
+	fmt.Println("  blog serve")
+
 	return nil
 }
 
@@ -319,22 +588,6 @@ func runGenerate() error {
 	return nil
 }
 
-// resolveFile checks for a file in the local directory first, then falls back
-// to the defaults directory (set via BLOG_DEFAULTS_DIR env var).
-func resolveFile(path string) string {
-	if _, err := os.Stat(path); err == nil {
-		return path
-	}
-	defaultsDir := os.Getenv("BLOG_DEFAULTS_DIR")
-	if defaultsDir != "" {
-		candidate := filepath.Join(defaultsDir, path)
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate
-		}
-	}
-	return path
-}
-
 func parseTemplates() (map[string]*template.Template, error) {
 	funcMap := template.FuncMap{
 		"formatDate": func(t time.Time) string {
@@ -348,10 +601,10 @@ func parseTemplates() (map[string]*template.Template, error) {
 	pages := []string{"home.html", "post.html", "archive.html"}
 	templates := make(map[string]*template.Template, len(pages))
 
-	baseFile := resolveFile(filepath.Join(templateDir, "base.html"))
+	baseFile := filepath.Join(templateDir, "base.html")
 
 	for _, page := range pages {
-		pageFile := resolveFile(filepath.Join(templateDir, page))
+		pageFile := filepath.Join(templateDir, page)
 		t, err := template.New("base.html").Funcs(funcMap).ParseFiles(baseFile, pageFile)
 		if err != nil {
 			return nil, fmt.Errorf("parsing %s: %w", page, err)
@@ -582,23 +835,11 @@ func generateRSSFeed(site SiteConfig, posts []*Post) error {
 }
 
 func copyStaticFiles() error {
-	defaultsDir := os.Getenv("BLOG_DEFAULTS_DIR")
-
-	if defaultsDir != "" {
-		defaultStatic := filepath.Join(defaultsDir, staticDir)
-		if _, err := os.Stat(defaultStatic); err == nil {
-			if err := copyDir(defaultStatic, outputDir); err != nil {
-				return fmt.Errorf("copying default static files: %w", err)
-			}
-		}
-	}
-
 	if _, err := os.Stat(staticDir); err == nil {
 		if err := copyDir(staticDir, outputDir); err != nil {
-			return fmt.Errorf("copying local static files: %w", err)
+			return fmt.Errorf("copying static files: %w", err)
 		}
 	}
-
 	return nil
 }
 
