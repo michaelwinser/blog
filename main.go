@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
@@ -87,6 +88,13 @@ type RSSItem struct {
 	Description string `xml:"description"`
 	PubDate     string `xml:"pubDate"`
 	GUID        string `xml:"guid"`
+}
+
+func version() string {
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" {
+		return info.Main.Version
+	}
+	return "dev"
 }
 
 func main() {
@@ -265,6 +273,7 @@ description: "A blog about things"
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{block "title" .}}{{.Site.Title}}{{end}}</title>
+    <meta name="generator" content="{{generator}}">
     <link rel="stylesheet" href="/css/style.css">
     <link rel="alternate" type="application/rss+xml" title="RSS Feed" href="/feed.xml">
 </head>
@@ -604,12 +613,16 @@ func runGenerate() error {
 }
 
 func parseTemplates() (map[string]*template.Template, error) {
+	ver := version()
 	funcMap := template.FuncMap{
 		"formatDate": func(t time.Time) string {
 			return t.Format("January 2, 2006")
 		},
 		"formatDateShort": func(t time.Time) string {
 			return t.Format("Jan 2")
+		},
+		"generator": func() string {
+			return "blog " + ver
 		},
 	}
 
